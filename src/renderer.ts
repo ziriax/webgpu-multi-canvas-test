@@ -9,8 +9,13 @@ function failure(method: string): never {
 }
 
 export async function createRenderers(
-    containerElem: HTMLElement, consoleElem: HTMLElement,
+    containerElem: HTMLElement,
     canvasCount: number, canvasWidth: number, canvasHeight: number) {
+
+    const cellCount = Math.ceil(Math.sqrt(canvasCount));
+    const cellsWidth = cellCount * canvasWidth;
+    const cellsHeight = cellCount * canvasHeight;
+
     const adapter = await navigator.gpu?.requestAdapter({
         powerPreference: "high-performance",
         // powerPreference: "low-power"
@@ -28,7 +33,33 @@ export async function createRenderers(
             ? navigator.gpu.getPreferredCanvasFormat()
             : "bgra8unorm";
 
-    // const sampleCount = 4;
+    const sampleCount = 4;
+
+    const cellsTarget = device.createTexture({
+        size: [cellsWidth, cellsHeight],
+        sampleCount,
+        format: presentationFormat,
+        usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
+    });
+ 
+    const cellsTargetView: GPUTextureView = cellsTarget.createView();
+    
+    const cellsTexture = device.createTexture({
+        size: [cellsWidth, cellsHeight],
+        format: presentationFormat,
+        usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
+    });
+
+    const cellsTextureView: GPUTextureView = cellsTexture.createView();
+
+
+    // const cellContext = cellCanvas.getContext('webgpu') as GPUCanvasContext;
+
+    // cellContext.configure({
+    //     device,
+    //     format: presentationFormat,
+    //     alphaMode: 'opaque',
+    // });
 
     const bindGroupLayout = device.createBindGroupLayout({
         entries: [
@@ -69,9 +100,9 @@ export async function createRenderers(
             topology: "triangle-list"
         },
 
-        // multisample: {
-        //     count: sampleCount,
-        // },
+        multisample: {
+            count: sampleCount,
+        },
 
         layout: pipelineLayout
     });
@@ -91,13 +122,14 @@ export async function createRenderers(
     //up vector is [0, 0, 1]
     mat4.lookAt(view, [-2, 0, 2], [0, 0, 0], [0, 0, 1]);
 
-    const renderers = Array(canvasCount).fill(0).map(_ => {
+    const renderers = Array(canvasCount).fill(0).map((_, index) => {
+        const cellX = (index % cellCount) * canvasWidth;
+        const cellY = Math.floor(index / cellCount) * canvasHeight;
+
         // TODO: window.devicePixelRatio
         const canvas = document.createElement("canvas");
         canvas.width = canvasWidth;
         canvas.height = canvasHeight;
-
-        containerElem.appendChild(canvas);
 
         const context = canvas.getContext('webgpu') as GPUCanvasContext;
 
@@ -105,14 +137,12 @@ export async function createRenderers(
             device,
             format: presentationFormat,
             alphaMode: 'opaque',
+            usage: GPUTextureUsage.COPY_DST
         });
 
-        // const renderTexture = device.createTexture({
-        //     size: [canvas.width, canvas.height],
-        //     // sampleCount,
-        //     format: presentationFormat,
-        //     usage: GPUTextureUsage.RENDER_ATTACHMENT,
-        // });
+        // const context = canvas.getContext("2d");
+
+        containerElem.appendChild(canvas);
 
         // const renderView = renderTexture.createView();
 
@@ -136,7 +166,7 @@ export async function createRenderers(
             ]
         });
 
-        function tick(commandEncoder: GPUCommandEncoder, time: number) {
+        function tick(renderPass: GPURenderPassEncoder, time: number) {
             mat4.identity(mvp);
             mat4.rotate(mvp, model, time / 1000, [0, 0, 1]);
             mat4.multiply(mvp, view, mvp);
@@ -144,33 +174,38 @@ export async function createRenderers(
 
             device.queue.writeBuffer(uniformBuffer, 0, mvp as Float32Array);
 
-            const canvasView: GPUTextureView = context.getCurrentTexture().createView();
-
-            const renderPassOpts: GPURenderPassDescriptor = {
-                colorAttachments: [{
-                    view: canvasView,
-                    clearValue: { r: 0.5, g: 0.0, b: 0.25, a: 1.0 },
-                    loadOp: "clear" as const,
-                    storeOp: "store" as const,
-                }]
-            };
-
-            //renderpass: holds draw commands, allocated from command encoder
-            const renderpass: GPURenderPassEncoder = commandEncoder.beginRenderPass(renderPassOpts);
-
-            renderpass.setPipeline(pipeline);
-            renderpass.setVertexBuffer(0, triangleMesh.buffer);
-            renderpass.setBindGroup(0, bindGroup);
-            renderpass.draw(3, 1, 0, 0);
-            renderpass.end();
+            renderPass.setScissorRect(cellX, cellY, canvasWidth, canvasHeight);
+            renderPass.setViewport(cellX, cellY, canvasWidth, canvasHeight, 0, 1);
+            renderPass.setVertexBuffer(0, triangleMesh.buffer);
+            renderPass.setBindGroup(0, bindGroup);
+            renderPass.draw(3, 1, 0, 0);
         }
 
         function dispose() {
             canvas.remove();
         }
 
+        function display(cellsTexture: GPUTexture, commandEncoder: GPUCommandEncoder) {
+
+            commandEncoder.copyTextureToTexture(
+                {
+                    texture: cellsTexture,
+                    origin: [cellX, cellY],
+                },
+                {
+                    texture: context.getCurrentTexture(),
+                },
+                { width: canvasWidth, height: canvasHeight }
+            );
+
+            // context?.drawImage(cellCanvas,
+            //     cellX, cellY, canvasWidth, canvasHeight,
+            //     0, 0, canvasWidth, canvasHeight);
+        }
+
         return {
             dispose,
+            display,
             tick
         }
     });
@@ -178,16 +213,40 @@ export async function createRenderers(
     let lastTime = 0;
     let fps = 0;
 
-    function tick(time: number) {
-        const smooth = 0.1;
+    async function tick(time: number) {
+        const smooth = 0.9;
         fps = fps * smooth + (1000 / (time - lastTime)) * (1 - smooth);
         lastTime = time;
 
-        consoleElem.innerText = `${fps.toFixed(2)}FPS`;
-
+        // consoleElem.innerText = `${fps.toFixed(2)}FPS`;
+        document.title = `${fps.toFixed(0)}FPS`;
+        
         const commandEncoder: GPUCommandEncoder = device.createCommandEncoder();
-        renderers.forEach(r => r.tick(commandEncoder, time));
+
+        const renderPassOpts: GPURenderPassDescriptor = {
+            colorAttachments: [{
+                resolveTarget: cellsTextureView,
+                view: cellsTargetView,
+                clearValue: { r: 0.0, g: 0.0, b: 0.0, a: 1.0 },
+                loadOp: "clear" as const,
+                storeOp: "store" as const,
+            }]
+        };
+
+        //renderpass: holds draw commands, allocated from command encoder
+        const renderPass: GPURenderPassEncoder = commandEncoder.beginRenderPass(renderPassOpts);
+        renderPass.setPipeline(pipeline);
+
+        renderers.forEach(r => r.tick(renderPass, time));
+
+        renderPass.end();
+
+        renderers.forEach(r => r.display(cellsTexture, commandEncoder));
+
         device.queue.submit([commandEncoder.finish()]);
+
+        // await device.queue.onSubmittedWorkDone();
+
         requestAnimationFrame(tick);
     }
 
