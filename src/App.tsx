@@ -1,24 +1,19 @@
-import React from 'react';
-import logo from './logo.svg';
+import { useRef } from 'react';
 import './App.css';
+import { createRenderers } from "./renderer";
+import useAsyncEffect from 'use-async-effect/types';
 
 function App() {
+  const appRef = useRef<HTMLDivElement>(null);
+
+  useAsyncEffect(
+    () => appRef.current ? createRenderers(appRef.current, 16, 192, 128) : Promise.reject(),
+    (dispose) => dispose?.()
+    , []);
+
   return (
-    <div className="App">
-      <header className="App-header">
-        <img src={logo} className="App-logo" alt="logo" />
-        <p>
-          Edit <code>src/App.tsx</code> and save to reload.
-        </p>
-        <a
-          className="App-link"
-          href="https://reactjs.org"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          Learn React
-        </a>
-      </header>
+    <div ref={appRef} className="App">
+      <span>Loading...</span>
     </div>
   );
 }
