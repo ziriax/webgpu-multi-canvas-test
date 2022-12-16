@@ -1,19 +1,21 @@
 import { useRef } from 'react';
-import './App.css';
 import { createRenderers } from "./renderer";
-import useAsyncEffect from 'use-async-effect/types';
+import useAsyncEffect from 'use-async-effect';
 
 function App() {
-  const appRef = useRef<HTMLDivElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const consoleRef = useRef<HTMLSpanElement>(null);
 
   useAsyncEffect(
-    () => appRef.current ? createRenderers(appRef.current, 16, 192, 128) : Promise.reject(),
+    () => containerRef.current && consoleRef.current
+      ? createRenderers(containerRef.current, consoleRef.current, 128, 96, 64) : Promise.reject(),
     (dispose) => dispose?.()
     , []);
 
   return (
-    <div ref={appRef} className="App">
-      <span>Loading...</span>
+    <div>
+      <code ref={consoleRef} />
+      <div ref={containerRef} />
     </div>
   );
 }
