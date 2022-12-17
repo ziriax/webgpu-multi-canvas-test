@@ -7,7 +7,7 @@ function App() {
 
   useAsyncEffect(
     () => containerRef.current 
-      ? createRenderers(containerRef.current, 100, 96, 64) : Promise.reject(),
+      ? createRenderers(containerRef.current, 108, 120, 80) : Promise.reject(),
     (dispose) => dispose?.()
     , []);
 

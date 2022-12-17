@@ -1,5 +1,5 @@
 import { mat4 } from "gl-matrix";
-import { TriangleMesh } from "./geometry";
+import { IsoSphereMesh } from "./geometry";
 import shaders from "./shaders.wgsl";
 
 function failure(method: string): never {
@@ -41,9 +41,9 @@ export async function createRenderers(
         format: presentationFormat,
         usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
     });
- 
+
     const cellsTargetView: GPUTextureView = cellsTarget.createView();
-    
+
     const cellsTexture = device.createTexture({
         size: [cellsWidth, cellsHeight],
         format: presentationFormat,
@@ -52,6 +52,44 @@ export async function createRenderers(
 
     const cellsTextureView: GPUTextureView = cellsTexture.createView();
 
+    const depthStencilState: GPUDepthStencilState = {
+        format: "depth32float",
+        depthWriteEnabled: true,
+        depthCompare: "less-equal",
+    };
+
+    const size: GPUExtent3D = {
+        width: cellsWidth,
+        height: cellsHeight,
+        depthOrArrayLayers: 1
+    };
+    
+    const depthBufferDescriptor: GPUTextureDescriptor = {
+        size: size,
+        format: depthStencilState.format,
+        usage: GPUTextureUsage.RENDER_ATTACHMENT,
+        sampleCount
+    }
+    
+    const depthStencilBuffer = device.createTexture(depthBufferDescriptor);
+
+    const viewDescriptor: GPUTextureViewDescriptor = {
+        format: depthStencilState.format,
+        dimension: "2d",
+        aspect: "depth-only"
+    };
+    
+    const depthStencilView = depthStencilBuffer.createView(viewDescriptor);
+    
+    const depthStencilAttachment: GPURenderPassDepthStencilAttachment = {
+        view: depthStencilView,
+        depthClearValue: 1.0,
+        depthLoadOp: "clear",
+        depthStoreOp: "store",
+
+        // stencilLoadOp: "clear",
+        // stencilStoreOp: "discard"
+    };
 
     // const cellContext = cellCanvas.getContext('webgpu') as GPUCanvasContext;
 
@@ -75,7 +113,8 @@ export async function createRenderers(
         bindGroupLayouts: [bindGroupLayout]
     });
 
-    const triangleMesh = new TriangleMesh(device);
+    const mesh = new IsoSphereMesh(device, 5);
+    console.warn(mesh.indexCount);
 
     const pipeline = device.createRenderPipeline({
         vertex: {
@@ -83,7 +122,7 @@ export async function createRenderers(
                 code: shaders
             }),
             entryPoint: "vs_main",
-            buffers: [triangleMesh.bufferLayout,]
+            buffers: [mesh.positionLayout, mesh.colorLayout]
         },
 
         fragment: {
@@ -97,14 +136,17 @@ export async function createRenderers(
         },
 
         primitive: {
-            topology: "triangle-list"
+            topology: "triangle-list",
+            cullMode: "back"
         },
 
         multisample: {
             count: sampleCount,
         },
 
-        layout: pipelineLayout
+        layout: pipelineLayout,
+        
+        depthStencil: depthStencilState,
     });
 
     // make transforms
@@ -176,9 +218,11 @@ export async function createRenderers(
 
             renderPass.setScissorRect(cellX, cellY, canvasWidth, canvasHeight);
             renderPass.setViewport(cellX, cellY, canvasWidth, canvasHeight, 0, 1);
-            renderPass.setVertexBuffer(0, triangleMesh.buffer);
+            renderPass.setIndexBuffer(mesh.indexBuffer, mesh.indexFormat);
+            renderPass.setVertexBuffer(0, mesh.positionBuffer);
+            renderPass.setVertexBuffer(1, mesh.colorBuffer);
             renderPass.setBindGroup(0, bindGroup);
-            renderPass.draw(3, 1, 0, 0);
+            renderPass.drawIndexed(mesh.indexCount);
         }
 
         function dispose() {
@@ -220,7 +264,7 @@ export async function createRenderers(
 
         // consoleElem.innerText = `${fps.toFixed(2)}FPS`;
         document.title = `${fps.toFixed(0)}FPS`;
-        
+
         const commandEncoder: GPUCommandEncoder = device.createCommandEncoder();
 
         const renderPassOpts: GPURenderPassDescriptor = {
@@ -230,7 +274,8 @@ export async function createRenderers(
                 clearValue: { r: 0.0, g: 0.0, b: 0.0, a: 1.0 },
                 loadOp: "clear" as const,
                 storeOp: "store" as const,
-            }]
+            }],
+            depthStencilAttachment
         };
 
         //renderpass: holds draw commands, allocated from command encoder
