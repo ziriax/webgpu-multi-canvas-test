@@ -12,9 +12,10 @@ export async function createRenderers(
     containerElem: HTMLElement,
     canvasCount: number, canvasWidth: number, canvasHeight: number) {
 
-    const cellCount = Math.ceil(Math.sqrt(canvasCount));
-    const cellsWidth = cellCount * canvasWidth;
-    const cellsHeight = cellCount * canvasHeight;
+    const cellsSideCount = 4;
+    const cellsCount = cellsSideCount * cellsSideCount;
+    const cellsWidth = cellsSideCount * canvasWidth;
+    const cellsHeight = cellsSideCount * canvasHeight;
 
     const adapter = await navigator.gpu?.requestAdapter({
         powerPreference: "high-performance",
@@ -35,22 +36,28 @@ export async function createRenderers(
 
     const sampleCount = 4;
 
-    const cellsTarget = device.createTexture({
-        size: [cellsWidth, cellsHeight],
-        sampleCount,
-        format: presentationFormat,
-        usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
-    });
+    function createCells() {
+        const targetTexture = device.createTexture({
+            size: [cellsWidth, cellsHeight],
+            sampleCount,
+            format: presentationFormat,
+            usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
+        });
 
-    const cellsTargetView: GPUTextureView = cellsTarget.createView();
+        const targetView: GPUTextureView = targetTexture.createView();
 
-    const cellsTexture = device.createTexture({
-        size: [cellsWidth, cellsHeight],
-        format: presentationFormat,
-        usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
-    });
+        const resolvedTexture = device.createTexture({
+            size: [cellsWidth, cellsHeight],
+            format: presentationFormat,
+            usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
+        });
 
-    const cellsTextureView: GPUTextureView = cellsTexture.createView();
+        const resolvedView: GPUTextureView = resolvedTexture.createView();
+
+        return { targetTexture, targetView, resolvedTexture, resolvedView };
+    }
+    
+    const textures = [createCells(), createCells()];
 
     const depthStencilState: GPUDepthStencilState = {
         format: "depth32float",
@@ -63,14 +70,14 @@ export async function createRenderers(
         height: cellsHeight,
         depthOrArrayLayers: 1
     };
-    
+
     const depthBufferDescriptor: GPUTextureDescriptor = {
         size: size,
         format: depthStencilState.format,
         usage: GPUTextureUsage.RENDER_ATTACHMENT,
         sampleCount
     }
-    
+
     const depthStencilBuffer = device.createTexture(depthBufferDescriptor);
 
     const viewDescriptor: GPUTextureViewDescriptor = {
@@ -78,9 +85,9 @@ export async function createRenderers(
         dimension: "2d",
         aspect: "depth-only"
     };
-    
+
     const depthStencilView = depthStencilBuffer.createView(viewDescriptor);
-    
+
     const depthStencilAttachment: GPURenderPassDepthStencilAttachment = {
         view: depthStencilView,
         depthClearValue: 1.0,
@@ -145,7 +152,7 @@ export async function createRenderers(
         },
 
         layout: pipelineLayout,
-        
+
         depthStencil: depthStencilState,
     });
 
@@ -165,9 +172,6 @@ export async function createRenderers(
     mat4.lookAt(view, [-2, 0, 2], [0, 0, 0], [0, 0, 1]);
 
     const renderers = Array(canvasCount).fill(0).map((_, index) => {
-        const cellX = (index % cellCount) * canvasWidth;
-        const cellY = Math.floor(index / cellCount) * canvasHeight;
-
         // TODO: window.devicePixelRatio
         const canvas = document.createElement("canvas");
         canvas.width = canvasWidth;
@@ -208,7 +212,7 @@ export async function createRenderers(
             ]
         });
 
-        function tick(renderPass: GPURenderPassEncoder, time: number) {
+        function tick(cellX: number, cellY: number, renderPass: GPURenderPassEncoder, time: number) {
             mat4.identity(mvp);
             mat4.rotate(mvp, model, time / 1000, [0, 0, 1]);
             mat4.multiply(mvp, view, mvp);
@@ -229,7 +233,7 @@ export async function createRenderers(
             canvas.remove();
         }
 
-        function display(cellsTexture: GPUTexture, commandEncoder: GPUCommandEncoder) {
+        function display(cellX: number, cellY: number, cellsTexture: GPUTexture, commandEncoder: GPUCommandEncoder) {
 
             commandEncoder.copyTextureToTexture(
                 {
@@ -255,38 +259,100 @@ export async function createRenderers(
     });
 
     let lastTime = 0;
-    let fps = 0;
+    let fps = 70;
+
+    // let activeLowerBound = 0;
+    // let activeUpperBound = renderers.length;
+    // let countLowerBound = 0;
+    // let countUpperBound = 0;
+    const bumpUpAfter = 5;
+    const bumpDownAfter = 50;
+
+    let bumpUpCount = 0;
+    let bumpDownCount = 0;
+    let activeCount = 1;
 
     async function tick(time: number) {
         const smooth = 0.9;
         fps = fps * smooth + (1000 / (time - lastTime)) * (1 - smooth);
         lastTime = time;
 
+        if (fps >= 59.9) {
+            if (++bumpUpCount >= bumpUpAfter) {
+                activeCount = Math.min(renderers.length, activeCount + 1);
+                bumpUpCount = 0;
+            }
+        } else {
+            bumpUpCount = 0;
+        }
+
+        if (fps <= 59) {
+            if (++bumpDownCount >= bumpDownAfter) {
+                activeCount = Math.max(1, activeCount - 1);
+                bumpDownCount = 0;
+            }
+        } else {
+            bumpDownCount = 0;
+        }
+        // const activeCount = (activeLowerBound + activeUpperBound + 1) >> 1;
+
+        // if (fps < 55 && ++countUpperBound >= checkAfter) {
+        //     activeUpperBound = activeCount;
+        //     countUpperBound = 0;
+        // }
+
+        // if (fps >= 60 && ++countLowerBound >= checkAfter) {
+        //     activeLowerBound = activeCount + 1;
+        //     countLowerBound = 0;
+        // }
+
         // consoleElem.innerText = `${fps.toFixed(2)}FPS`;
-        document.title = `${fps.toFixed(0)}FPS`;
+        document.title = `${activeCount} ${fps.toFixed(0)}FPS`;
 
         const commandEncoder: GPUCommandEncoder = device.createCommandEncoder();
+        
+        function createRenderPassOpts(t: typeof textures[0]) {
+            const renderPassOpts: GPURenderPassDescriptor = {
+                colorAttachments: [{
+                    resolveTarget: t.resolvedView,
+                    view: t.targetView,
+                    clearValue: { r: 0.0, g: 0.0, b: 0.0, a: 1.0 },
+                    loadOp: "clear" as const,
+                    storeOp: "store" as const,
+                }],
+                depthStencilAttachment
+            };
+            
+            return renderPassOpts;
+        }
+        
+        const renderPassOpts = textures.map(createRenderPassOpts);
+        
+        let texturesIndex = 0;
 
-        const renderPassOpts: GPURenderPassDescriptor = {
-            colorAttachments: [{
-                resolveTarget: cellsTextureView,
-                view: cellsTargetView,
-                clearValue: { r: 0.0, g: 0.0, b: 0.0, a: 1.0 },
-                loadOp: "clear" as const,
-                storeOp: "store" as const,
-            }],
-            depthStencilAttachment
-        };
+        for (let renderersIndex = 0; renderersIndex < activeCount; renderersIndex += cellsCount) {
+            //renderpass: holds draw commands, allocated from command encoder
+            const renderPass: GPURenderPassEncoder = commandEncoder.beginRenderPass(renderPassOpts[texturesIndex]);
+            renderPass.setPipeline(pipeline);
 
-        //renderpass: holds draw commands, allocated from command encoder
-        const renderPass: GPURenderPassEncoder = commandEncoder.beginRenderPass(renderPassOpts);
-        renderPass.setPipeline(pipeline);
+            const count = Math.min(activeCount - renderersIndex, cellsCount);
 
-        renderers.forEach(r => r.tick(renderPass, time));
+            for (let i = 0; i < count; ++i) {
+                const cellX = (i % cellsSideCount) * canvasWidth;
+                const cellY = Math.floor(i / cellsSideCount) * canvasHeight;
+                renderers[renderersIndex + i].tick(cellX, cellY, renderPass, time);
+            }
 
-        renderPass.end();
+            renderPass.end();
 
-        renderers.forEach(r => r.display(cellsTexture, commandEncoder));
+            for (let i = 0; i < count; ++i) {
+                const cellX = (i % cellsSideCount) * canvasWidth;
+                const cellY = Math.floor(i / cellsSideCount) * canvasHeight;
+                renderers[renderersIndex + i].display(cellX, cellY, textures[texturesIndex].resolvedTexture, commandEncoder);
+            }
+            
+            texturesIndex ^= 1;
+        }
 
         device.queue.submit([commandEncoder.finish()]);
 
